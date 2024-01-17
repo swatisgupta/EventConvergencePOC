@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using static Azure.Core.HttpHeader;
 
 namespace EventConvergencePOCTest.Src
 {
@@ -52,19 +53,22 @@ namespace EventConvergencePOCTest.Src
             // resetTimings();
 
             List<string> altNames = new List<string> { EventName };
+
             // Get catalog data for eventname and get all alias names
-            try {
-            var entry = CatalogContainer.ReadItemAsync<DependencyEntity>(EventName.ToLower(), new PartitionKey(EventName.Split('.')[0].ToLower())).GetAwaiter().GetResult();
-            // find event with event name and alias name in EventsContainer
-
-            EntityNewName = null;
-            // RCCatalog += entry.RequestCharge;
-
-            if (entry?.Resource != null)
+            try
             {
-                EntityNewName = entry.Resource?.EntityName;
-                altNames.AddRange(entry.Resource.GetAllEntityNames());
-            }
+                var entry = CatalogContainer.ReadItemAsync<DependencyEntity>(EventName.ToLower(), new PartitionKey(EventName.Split('.')[0].ToLower())).GetAwaiter().GetResult();
+                // find event with event name and alias name in EventsContainer
+
+                EntityNewName = null;
+                // RCCatalog += entry.RequestCharge;
+
+                if (entry?.Resource != null)
+                {
+                    EntityNewName = entry.Resource?.EntityName;
+                    IEnumerable<string> differenceQuery = entry.Resource.GetAllEntityNames().Except(altNames);
+                    altNames.AddRange(differenceQuery); 
+                }
             }
             catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
             {

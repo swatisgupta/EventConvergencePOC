@@ -10,7 +10,7 @@ namespace EventConvergencePOCTest.Tests
 {
     internal class LoadTestEventConvergence
     {
-        static int MAX_ITERATIONS = 10000;
+        static int MAX_ITERATIONS = 1000;
 
         static int MAX_EVENTS = 10;
 
@@ -31,7 +31,7 @@ namespace EventConvergencePOCTest.Tests
 
         public static void LoadTestsWithAlias()
         {
-            resultPath = @"C:\Users\swatisinghal\Documents\EventConvergencePOC\Alias";
+            resultPath = @"C:\Users\swatisinghal\Documents\EventConvergencePOCNumbers\Alias";
 
             EventNames = new List<string>() { "ESTS.Milestones.InternallyReady",
                                                               "Milestones.ESTSGeo.InternallyReady",
@@ -54,7 +54,7 @@ namespace EventConvergencePOCTest.Tests
 
         public static void LoadTestsWithoutAlias()
         {
-            resultPath = @"C:\Users\swatisinghal\Documents\EventConvergencePOC\NoAlias";
+            resultPath = @"C:\Users\swatisinghal\Documents\EventConvergencePOCNumbers\NoAlias";
 
             EventNames = new List<string>() { "Milestones.ESTS.InternallyReady",
                                                               "Milestones.ESTSGeo.InternallyReady",
@@ -69,9 +69,9 @@ namespace EventConvergencePOCTest.Tests
 
             LoadTestRegister();
             
-            // LoadTestSatisfy();
+            LoadTestSatisfy();
              
-            // LoadTestCancel();
+            LoadTestCancel();
             
         }
 
@@ -84,7 +84,7 @@ namespace EventConvergencePOCTest.Tests
             System.IO.Directory.CreateDirectory($"{resultPath}");
             System.IO.File.WriteAllLines($"{resultPath}\\RegisterTimes.txt", overall);
             System.IO.File.WriteAllLines($"{resultPath}\\RegisterRU.txt", ru);
-
+            Random rnd = new Random(1000);
             for (int i = 0; i < MAX_ITERATIONS; i++)
             {
                 overall.Clear();
@@ -93,7 +93,7 @@ namespace EventConvergencePOCTest.Tests
                 {
                     try
                     {
-                        test.Register(EventNames[j], $"{ScopeType}.{ScopeVal[j]}", $"J{i * MAX_EVENTS + j}", "T1");
+                        test.Register(EventNames[j], $"{ScopeType}.{ScopeVal[j]}", $"J{rnd.Next(1, 1000)}", "T1");
                     }
                     catch (Exception e)
                     {
@@ -116,14 +116,20 @@ namespace EventConvergencePOCTest.Tests
             test.CreateConnection();
             List<string> overall = new List<string>();
             List<string> ru = new List<string>();
+            System.IO.Directory.CreateDirectory($"{resultPath}");
 
+            System.IO.File.WriteAllLines($"{resultPath}\\CancelTimes.txt", overall);
+            System.IO.File.WriteAllLines($"{resultPath}\\CancelRU.txt", ru);
+            Random rnd = new Random(1000);
             for (int i = 0, j = 0; i < MAX_ITERATIONS; i++)
             {
+                overall.Clear();
+                ru.Clear();
                 for (j = 0; j < MAX_EVENTS; j++)
                 {
                     try
                     {
-                        test.Cancel(EventNames[j], $"{ScopeType}.{ScopeVal[j]}", $"J{i * MAX_EVENTS + j}", "T1");
+                        test.Cancel(EventNames[j], $"{ScopeType}.{ScopeVal[j]}", $"J{rnd.Next(1, 1000)}", "T1");
                     }
                     catch (Exception e)
                     {
@@ -132,14 +138,12 @@ namespace EventConvergencePOCTest.Tests
                     overall.Add(test.GetExecutionTimes());
                     ru.Add(test.GetRUConsumption());
                 }
+                Console.WriteLine($"Cancel: Iteration {i + 1} complete");
+
+                System.IO.File.AppendAllLines($"{resultPath}\\CancelTimes.txt", overall);
+                System.IO.File.AppendAllLines($"{resultPath}\\CancelRU.txt", ru);
+
             }
-            //create path if not exists 
-            System.IO.Directory.CreateDirectory($"{resultPath}");
-
-            // write to file
-            System.IO.File.WriteAllLines($"{resultPath}\\CancelTimes.txt", overall);
-            System.IO.File.WriteAllLines($"{resultPath}\\CancelRU.txt", ru);
-
         }
 
         public static void LoadTestSatisfy()
@@ -148,14 +152,20 @@ namespace EventConvergencePOCTest.Tests
             test.CreateConnection();
             List<string> overall = new List<string>();
             List<string> ru = new List<string>();
+            System.IO.Directory.CreateDirectory($"{resultPath}");
+            System.IO.File.WriteAllLines($"{resultPath}\\SatisfyTimes.txt", overall);
+            System.IO.File.WriteAllLines($"{resultPath}\\SatisfyRU.txt", ru);
+            Random rnd = new Random(1000);
 
             for (int i = 0, j = 0; i < MAX_ITERATIONS; i++)
             {
+                overall.Clear();
+                ru.Clear();
                 for (j = 0; j < MAX_EVENTS; j++)
                 {
                     try 
                     {
-                        test.Satisfy(EventNames[j], $"{ScopeType}.{ScopeVal[j]}", $"J{i * MAX_EVENTS + j}", "T1");
+                        test.Satisfy(EventNames[j], $"{ScopeType}.{ScopeVal[j]}", $"J{rnd.Next(1, 1000)}", "T1");
                     }
                     catch (Exception e)
                     {
@@ -164,13 +174,12 @@ namespace EventConvergencePOCTest.Tests
                     overall.Add(test.GetExecutionTimes());
                     ru.Add(test.GetRUConsumption());
                 }
-            }
-            //create path if not exists 
-            System.IO.Directory.CreateDirectory($"{resultPath}");
+                Console.WriteLine($"Satisfy: Iteration {i + 1} complete");
 
-            // write to file
-            System.IO.File.WriteAllLines($"{resultPath}\\SatisfyTimes.txt", overall);
-            System.IO.File.WriteAllLines($"{resultPath}\\SatisfyRU.txt", ru); 
+                System.IO.File.AppendAllLines($"{resultPath}\\SatisfyTimes.txt", overall);
+                System.IO.File.AppendAllLines($"{resultPath}\\SatisfyRU.txt", ru);
+
+            }
         }
     }
 }

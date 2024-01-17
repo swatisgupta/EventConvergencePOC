@@ -27,6 +27,8 @@ namespace EventConvergencePOCTest.Contracts
         public List<Dictionary<string, string>> AssociatedPrerequisites { get; set; }
         public int TimeToSatisfy { get; set; }
 
+        public int SatisfyBy { get; set; }
+
         public DateTime EventTimestamp { get; set; }
     }
 }

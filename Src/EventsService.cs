@@ -140,11 +140,11 @@ namespace EventConvergencePOCTest.Src
 
             if (EventName.Equals(EntityName))
             {                 
-                this.eventsDataSource.RegisterEvent(entry, EventName, scope, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow);
+                this.eventsDataSource.RegisterEvent(entry, EventName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow);
             }
             else
             {
-                this.eventsDataSource.RegisterEvent(entry, entry != null ? entry.EventName : EventName, scope, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow); ;
+                this.eventsDataSource.RegisterEvent(entry, entry != null ? entry.EventName : EventName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow); ;
             }
             timer.EndTimer(EventsTimer);
             // this.EventsRU += this.eventsDataSource.GetEventsRU();

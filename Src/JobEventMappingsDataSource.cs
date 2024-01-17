@@ -14,7 +14,7 @@ namespace EventConvergencePOCTest.Src
         Dictionary<string, Container> JobEventContainers;
         List<string> JobEventsContainerId = new List<string> { "JobEventsMapping" };
         Database EventDatabase;
-        string databaseId = "Events";
+        string databaseId = "EventsTest";
         List<string> EventsContainerId = new List<string> { "Events" };
 
         double RCMappings = 0;
@@ -161,36 +161,50 @@ namespace EventConvergencePOCTest.Src
         {
             var JobEventMappingsContainer = JobEventContainers[JobEventsContainerId[0]];
             ResetRU();
-            foreach (var name in altNames)
-            {
-
-                PartitionKey partitionKey = new PartitionKeyBuilder()
-                .Add(name) //Publishing event
-                .Add(scope) //Scope
-                .Build();
-
-                ItemResponse<JobEventMappings> response = null;
+            // foreach (var name in altNames)
+            // {
+            //     ItemResponse<JobEventMappings> response = null;
 
                 try
                 {
+                    var query = $"SELECT * FROM c WHERE c.JobId = '{jobId}' AND c.TaskId = '{taskId}'";
+                    var queryDefinition = new QueryDefinition(query);
+                    var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
+                    var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
+
+                    if(results != null)
+                    {
+                        foreach(var result in results)
+                        {
+                            if(altNames.Contains(result.PublishingEvent) && scope.Equals(result.Scope))
+                            {
+                                return result;
+                            }
+
+                        }
+                    }
+/*
                     string id = $"{jobId}-{taskId}".ToLower();
                     string pK = $"{name}-{scope}".ToLower();
                     response = JobEventMappingsContainer.ReadItemAsync<JobEventMappings>(id, new PartitionKey(pK)).GetAwaiter().GetResult();
                     RCMappings += response.RequestCharge;
+*/
                 }
                 catch (Exception ex)
                 {
                     // Console.WriteLine(ex.Message);
-                    continue;
+                    // continue;
                 }
-
+            /*
                 if (response.Resource != null && response.Resource.BindingState == "Active")
                 {
                     // this.serverSideQueryTimeMappings += entry.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     // this.serverSideQueryRCMappings += entry.RequestCharge;
                     return response.Resource;
                 }
+
             }
+            */
             return null;
         }
 

@@ -12,7 +12,7 @@ namespace EventConvergencePOCTest.Src
         CosmosClient cosmosClient;
         Database EventDatabase;
         Dictionary<string, Container> EventsContainers;
-        string databaseId = "Events";
+        string databaseId = "EventsTest";
         List<string> EventsContainerId = new List<string> { "Events" };
 
         double RCEvents = 0;
@@ -93,7 +93,7 @@ namespace EventConvergencePOCTest.Src
             return null;
         }
 
-        public void RegisterEvent(Events oldState, string EventName, string scope, string jobId, string taskId, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, string jobType = null, string workflow = null)
+        public void RegisterEvent(Events oldState, string EventName, string scope, bool HardSet, string jobId, string taskId, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, string jobType = null, string workflow = null)
         {
             resetTimings();
             bool isStateChanged = true;
@@ -109,10 +109,11 @@ namespace EventConvergencePOCTest.Src
                 AssociatedJobType = jobType,
                 AssociatedWorkflow = workflow,
                 AdditionalScopes = AdditionalScopes,
+                SatisfyBy = 0,
                 Status = "Registered"
             };
 
-            if (oldState != null)
+            if (!HardSet && oldState != null)
             {
                 if (oldState.Status == "Satisfied")
                 {
@@ -143,6 +144,7 @@ namespace EventConvergencePOCTest.Src
                 AssociatedJobType = jobType,
                 AssociatedWorkflow = workflow,
                 Status = "Satisfied",
+                SatisfyBy = oldState != null ? oldState.SatisfyBy + 1 : 1,
                 AdditionalScopes = AdditionalScopes
             };
 
@@ -163,7 +165,8 @@ namespace EventConvergencePOCTest.Src
                 EventName = EventName,
                 Scope = scope,
                 EventTimestamp = DateTime.UtcNow,
-                Status = "Canceled"
+                Status = "Canceled",
+                SatisfyBy = 0,
             };
 
             if (oldState != null)
@@ -188,11 +191,10 @@ namespace EventConvergencePOCTest.Src
                 }
                 else if (oldState.Status == "Satisfied")
                 {
-                    jobEventMappings = this.jobEventMappingsDataSource.GetAllJobsEmitEvent(altNames, scope);
-                    RCJobEventMappings += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
+                    newState.SatisfyBy = oldState.SatisfyBy--;
                 }
 
-                if (jobEventMappings == null || jobEventMappings.Count == 0)
+                if (newState.SatisfyBy == 0 && (jobEventMappings == null || jobEventMappings.Count == 0) )
                 {
                     // No jobs published or registered this event - cancel the event
                     newState.Status = "Canceled";
@@ -201,6 +203,12 @@ namespace EventConvergencePOCTest.Src
                 {
                     // There are jobs that published or registered this event - but the job/task that satisfied the event is being canceled
                     // So we need to change the job association
+                    if (newState.SatisfyBy > 1)
+                    {
+                        jobEventMappings = this.jobEventMappingsDataSource.GetAllJobsEmitEvent(altNames, scope);
+                        RCJobEventMappings += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
+                    }
+
                     newState.Status = oldState.Status;
 
                     // Find the last job that published or registered this event based on the event status
