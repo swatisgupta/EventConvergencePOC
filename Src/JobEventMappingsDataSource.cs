@@ -1,8 +1,11 @@
 ﻿using EventConvergencePOCTest.Contracts;
 using Microsoft.Azure.Cosmos;
+using Microsoft.Azure.Cosmos.Serialization.HybridRow;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -14,25 +17,32 @@ namespace EventConvergencePOCTest.Src
         Dictionary<string, Container> JobEventContainers;
         List<string> JobEventsContainerId = new List<string> { "JobEventsMapping" };
         Database EventDatabase;
-        string databaseId = "EventsTest";
+        string databaseId = "Events";
         List<string> EventsContainerId = new List<string> { "Events" };
 
-        double RCMappings = 0;
+        public static string BindingStateActive = "Active";
+        public static string BindingStateInActive = "InActive";
+        public static string Satisfied = "Satisfied";
+        public static string Canceled = "Canceled";
+        public static string Registered = "Registered";
+
+
+        double requestCharge = 0;
+        double requestExecutionTime = 0;
 
         public JobEventMappingsDataSource (CosmosClient cosmosClient)
         {
             this.cosmosClient = cosmosClient;
         }
 
-        private void ResetRU()
+        private void ResetTimmings()
         {
-            RCMappings = 0;
+            requestCharge = 0;
+            requestExecutionTime = 0;
         }
         public void GetJobEventContainers()
         {
-
             this.JobEventContainers = new Dictionary<string, Container>();
-
             EventDatabase = cosmosClient.CreateDatabaseIfNotExistsAsync(databaseId).GetAwaiter().GetResult()?.Database;
 
             FeedIterator<ContainerProperties> iterator = EventDatabase.GetContainerQueryIterator<ContainerProperties>();
@@ -67,10 +77,9 @@ namespace EventConvergencePOCTest.Src
                 }
 
                 List<string> subPartitionKeyPaths = new List<string> {
-                                                    "/PublishingEvent",
-                                                    "/Scope" };
-                string partitionKey = "/pk";
-                var containerProperties = new ContainerProperties(containerId, partitionKey);
+                                                    "/pk1",
+                                                    "/pk2" };
+                var containerProperties = new ContainerProperties(containerId, partitionKeyPaths: subPartitionKeyPaths);
                 var throughputProperties = ThroughputProperties.CreateAutoscaleThroughput(1000);
                 JobEventContainers[containerId] = EventDatabase.CreateContainerIfNotExistsAsync(
                     containerProperties,
@@ -79,15 +88,15 @@ namespace EventConvergencePOCTest.Src
             }
         }
 
-        public void UpdateJobEventMappings(JobEventMappings newState)
+        public Tuple<double, double> UpdateJobEventMappings(JobEventMappings newState)
         {
-            ResetRU();
             try
             {
-                newState.pk = $"{newState.PublishingEvent}-{newState.Scope}".ToLower();
+                newState.pk1 = $"{newState.PublishingEvent}".ToLower();
+                newState.pk2 = $"{newState.Scope}".ToLower();
                 newState.id = $"{newState.JobId}-{newState.TaskId}".ToLower();
                 var response = JobEventContainers[JobEventsContainerId[0]].UpsertItemAsync<JobEventMappings>(newState).GetAwaiter().GetResult();
-                RCMappings += response.RequestCharge;
+                return new Tuple<double, double>(response.RequestCharge, response.Diagnostics.GetClientElapsedTime().TotalMilliseconds);
             }
             catch(Exception ex)
             {
@@ -96,11 +105,46 @@ namespace EventConvergencePOCTest.Src
             }
         }
 
+        public List<JobEventMappings> GetAllJobsEmitOrRegisterEvent(List<string> EventNames, string scope)
+        {
+            var JobEventMappingsContainer = JobEventContainers[JobEventsContainerId[0]];
+            List<JobEventMappings> resultsList = new List<JobEventMappings>();
+            ResetTimmings();
+            foreach (var name in EventNames)
+            {
+
+                try
+                {
+                    var query = $"SELECT * FROM c WHERE c.PublishingEvent = '{name}' AND c.Scope = '{scope}' AND c.BindingState = '{BindingStateActive}'";
+                    var queryDefinition = new QueryDefinition(query);
+                    var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
+                    var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
+                    this.requestCharge += results.RequestCharge;
+                    this.requestExecutionTime += results.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
+                    if (results != null)
+                    {
+                        resultsList.AddRange(results.Where((x) => x.Status != Canceled)?.ToList());
+                    }
+
+                }
+                catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    // Console.WriteLine(ex.Message);
+                    continue;
+                }
+            }
+            return resultsList;
+        }
+
         public List<JobEventMappings> GetAllJobsEmitEvent(List<string> EventNames, string scope)
         {
             var JobEventMappingsContainer = JobEventContainers[JobEventsContainerId[0]];
             List<JobEventMappings> resultsList = new List<JobEventMappings>();
-            ResetRU();
+            ResetTimmings();
             foreach (var name in EventNames)
             {
 
@@ -110,12 +154,17 @@ namespace EventConvergencePOCTest.Src
                     var queryDefinition = new QueryDefinition(query);
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
                     var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
-                    this.RCMappings += results.RequestCharge;
+                    this.requestCharge += results.RequestCharge;
+                    this.requestExecutionTime += results.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     if (results != null)
                     {
                         resultsList.AddRange(results.ToList());
                     }
 
+                }
+                catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return null;
                 }
                 catch (Exception ex)
                 {
@@ -131,22 +180,27 @@ namespace EventConvergencePOCTest.Src
             var JobEventMappingsContainer = JobEventContainers[JobEventsContainerId[0]];
             List<JobEventMappings> resultsList = new List<JobEventMappings>();
             
-            ResetRU();
+            ResetTimmings();
             foreach (var name in EventNames)
             {
 
                 try
                 {
-                    var query = $"SELECT * FROM c WHERE c.PublishingEvent = '{name}' AND c.Scope = '{scope}' AND c.Status = 'Registered' AND c.BindingState = 'Active'";
+                    var query = $"SELECT * FROM c WHERE c.pk1 = '{name.ToLower()}' AND c.pk2 = '{scope.ToLower()}' AND c.Status = 'Registered' AND c.BindingState = 'Active'";
                     var queryDefinition = new QueryDefinition(query);
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
                     var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
-                    this.RCMappings += results.RequestCharge;
+                    this.requestCharge += results.RequestCharge;
+                    this.requestExecutionTime += results.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     if (results != null)
                     {
                         resultsList.AddRange(results.ToList());
                     }
 
+                }
+                catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return null;
                 }
                 catch (Exception ex)
                 {
@@ -160,57 +214,63 @@ namespace EventConvergencePOCTest.Src
         public JobEventMappings GetEventForJob(string jobId, string taskId, List<string> altNames, string scope)
         {
             var JobEventMappingsContainer = JobEventContainers[JobEventsContainerId[0]];
-            ResetRU();
-            // foreach (var name in altNames)
-            // {
-            //     ItemResponse<JobEventMappings> response = null;
+            ResetTimmings();
 
-                try
+            try
+            {
+                if (altNames.Count > 0)
                 {
-                    var query = $"SELECT * FROM c WHERE c.JobId = '{jobId}' AND c.TaskId = '{taskId}'";
+                    var query = $"SELECT * FROM c WHERE c.JobId = '{jobId}' AND c.TaskId = '{taskId}' AND c.pk2='{scope.ToLower()}'";
                     var queryDefinition = new QueryDefinition(query);
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
-                    var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
+                    var response = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
+                    this.requestCharge += response.RequestCharge;
+                    this.requestExecutionTime += response.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
 
-                    if(results != null)
+                    if (response != null)
                     {
-                        foreach(var result in results)
+                        foreach (var entry in response)
                         {
-                            if(altNames.Contains(result.PublishingEvent) && scope.Equals(result.Scope))
+                            if (altNames.Contains(entry.PublishingEvent) && scope.Equals(entry.Scope))
                             {
-                                return result;
+                                return entry;
                             }
 
                         }
                     }
-/*
-                    string id = $"{jobId}-{taskId}".ToLower();
-                    string pK = $"{name}-{scope}".ToLower();
-                    response = JobEventMappingsContainer.ReadItemAsync<JobEventMappings>(id, new PartitionKey(pK)).GetAwaiter().GetResult();
-                    RCMappings += response.RequestCharge;
-*/
                 }
-                catch (Exception ex)
+                else
                 {
-                    // Console.WriteLine(ex.Message);
-                    // continue;
-                }
-            /*
-                if (response.Resource != null && response.Resource.BindingState == "Active")
-                {
-                    // this.serverSideQueryTimeMappings += entry.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
-                    // this.serverSideQueryRCMappings += entry.RequestCharge;
+                    var id = $"{jobId}-{taskId}";
+                    var partitionKey = new PartitionKeyBuilder().Add(altNames[0].ToLower()).Add(scope.ToLower()).Build();
+                    var response = JobEventMappingsContainer.ReadItemAsync<JobEventMappings>(id, partitionKey).GetAwaiter().GetResult();
+                    this.requestCharge += response.RequestCharge;
+                    this.requestExecutionTime += response.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     return response.Resource;
                 }
 
             }
-            */
+            catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return null;
+            }
+            catch (Exception ex)
+            {
+                // Console.WriteLine(ex.Message);
+                throw ex;
+            }
+
             return null;
         }
 
-        public double GetJobEventMappingsRU()
+        public double GetRequestCharge()
         {
-            return RCMappings;
+            return requestCharge;
+        }
+
+        public double GetRequestExecutionTime()
+        {
+            return requestExecutionTime;
         }
     }
 }

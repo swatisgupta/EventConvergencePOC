@@ -7,7 +7,9 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Threading.Tasks;
 using Container = Microsoft.Azure.Cosmos.Container;
 
 namespace EventConvergencePOCTest.Src
@@ -48,15 +50,17 @@ namespace EventConvergencePOCTest.Src
         public void CreateConnection()
         {
             cosmosClient1 = new CosmosClient(connectionString,
-                       new CosmosClientOptions()
-                       {
-                           AllowBulkExecution = true,
-                       });
+                                            new CosmosClientOptions()
+                                            {
+                                                AllowBulkExecution = true,
+                                            });
+
             cosmosClient2 = new CosmosClient(connectionString,
-           new CosmosClientOptions()
-           {
-               AllowBulkExecution = true,
-           });
+                                           new CosmosClientOptions()
+                                           {
+                                               AllowBulkExecution = true,
+                                           });
+
             catalogDataSource = new CatalogDataSource(cosmosClient1);
             jobEventMappingsDataSource = new JobEventMappingsDataSource(cosmosClient2);
             eventsDataSource = new EventsDataSource(cosmosClient2, catalogDataSource, jobEventMappingsDataSource);
@@ -93,18 +97,29 @@ namespace EventConvergencePOCTest.Src
             }
         }
 
-        public void Register(string EventName, string scope, string jobId = null, string taskId = null, Dictionary<string,string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, List<Dictionary<string, string>> AssociatedPrerequisites = null, string jobType = null, string workflow = null)
+        public void Register(string EventName, string scope, string jobId = null, string taskId = null, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, List<Dictionary<string, string>> AssociatedPrerequisites = null, string jobType = null, string workflow = null)
         {
             ResetStatistics();
+
+            /*
+            Task<Tuple<double, double>>[] TaskList =    {
+                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); } ),
+                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); }),
+                                                            new Task<Tuple<double, double>>(() => { return new Tuple<double, double>( 0, 0 ); }),
+                                                         };
+            */
 
             timer.StartTimer();
             var altNames = catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
             timer.EndTimer(CatalogTimer);
+            CatalogRU += catalogDataSource.GetCatalogRU();
 
             timer.StartTimer();
             if (jobId != null && taskId != null)
             {
                 var jobRecord = this.jobEventMappingsDataSource.GetEventForJob(jobId, taskId, altNames, scope);
+                this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
+
                 if (jobRecord == null)
                 {
                     jobRecord = new JobEventMappings
@@ -116,44 +131,83 @@ namespace EventConvergencePOCTest.Src
                         EventTimestamp = DateTime.UtcNow,
                         JobType = jobType,
                         Workflow = workflow,
-                        BindingState = "Active",
-                        Status = "Registered",
+                        BindingState = JobEventMappingsDataSource.BindingStateActive,
                     };
                 }
-                jobRecord.Status = "Registered";
+                jobRecord.Status = JobEventMappingsDataSource.Registered;
                 jobRecord.EventTimestamp = DateTime.UtcNow;
                 jobRecord.Arguments = EventArguments ?? jobRecord.Arguments;
                 jobRecord.AdditionalScopes = AdditionalScopes ?? jobRecord.AdditionalScopes;
                 jobRecord.AssociatedPrerequisites = AssociatedPrerequisites ?? jobRecord.AssociatedPrerequisites;
                 // read Job-Event container if record found, update state to registered
-                this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
+                var res = jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
+
+                this.JobEventMappingsRU += res.Item1;
+
+                // TaskList[0] = new Task<Tuple<double, double>>(() => jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord));
             }
 
+            /* 
+             TaskList[0].Start();
+            TaskList[0].Wait();
+            */
+
             timer.EndTimer(JobEventMappingsTimer);
-            // this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
 
             timer.StartTimer();
             var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
             var oldEntry = GetEventOldTable(EventName, scope);
 
-            var entry = CalculateState(oldEntry, newEntry);
+            var existingState = CalculateState(oldEntry, newEntry);
+            bool isStatusChanged = false;
+            var targetName = EventName.Equals(EntityName) ? EntityName : existingState != null ? existingState.EventName : EventName;
 
-            if (EventName.Equals(EntityName))
-            {                 
-                this.eventsDataSource.RegisterEvent(entry, EventName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow);
-            }
-            else
+            isStatusChanged = this.eventsDataSource.RegisterEvent(existingState, out Events newState, targetName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, AssociatedPrerequisites, jobType, workflow);
+
+            if (isStatusChanged)
             {
-                this.eventsDataSource.RegisterEvent(entry, entry != null ? entry.EventName : EventName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow); ;
+                if (existingState != null && existingState.EventName != targetName)
+                {
+                    existingState.Status = EventsDataSource.Obsolete;
+                    // TaskList[1] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(existingState));
+                   var res =  this.eventsDataSource.UpdateEvent(existingState);
+
+                    this.EventsRU += res.Item1;
+                    // timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2);
+                }
+                var res2 = this.eventsDataSource.UpdateEvent(newState);
+                this.EventsRU += res2.Item1;
+
             }
-            timer.EndTimer(EventsTimer);
-            // this.EventsRU += this.eventsDataSource.GetEventsRU();
-            // this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
+            /*
+            TaskList[1].Start();
+            TaskList[2].Start();
+            */
+
+            timer.EndTimer((int)EventsTimer);
+            this.EventsRU += this.eventsDataSource.GetRequestCharge();
+           /*
+            Task.WaitAll(TaskList);
+
+            this.JobEventMappingsRU += TaskList[0].Result.Item1;
+            timer.UpdateTimer(JobEventMappingsTimer, TaskList[0].Result.Item2);
+
+            this.EventsRU += TaskList[1].Result.Item1 + TaskList[2].Result.Item1;
+            timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2);
+           */
         }
 
         public void Satisfy(string EventName, string scope, string jobId = null, string taskId = null, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, List<Dictionary<string,string>> AssociatedPrerequisites = null, string jobType = null, string workflow = null)
         {
             ResetStatistics();
+
+            /*
+            Task<Tuple<double, double>>[] TaskList =    {
+                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); } ),
+                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); }),
+                                                            new Task<Tuple<double, double>>(() => { return new Tuple<double, double>( 0, 0 ); }),
+                                                         };
+            */
 
             timer.StartTimer();
             var altNames = catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
@@ -165,6 +219,8 @@ namespace EventConvergencePOCTest.Src
             {
                 // read Job-Event container if record found, update state to registered
                 var jobRecord = this.jobEventMappingsDataSource.GetEventForJob(jobId, taskId, altNames, scope);
+                this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
+
                 if (jobRecord == null)
                 {
                     jobRecord = new JobEventMappings
@@ -176,39 +232,61 @@ namespace EventConvergencePOCTest.Src
                         EventTimestamp = DateTime.UtcNow,
                         JobType = jobType,
                         Workflow = workflow,
-                        BindingState = "Active",
+                        BindingState = JobEventMappingsDataSource.BindingStateActive,
                     };
                 }
                 string previousStatus = jobRecord.Status;
 
-                jobRecord.Status = "Satisfied";
+                jobRecord.Status = JobEventMappingsDataSource.Satisfied;
                 jobRecord.EventTimestamp = DateTime.UtcNow;
                 jobRecord.Arguments = EventArguments ?? jobRecord.Arguments;
                 jobRecord.AdditionalScopes = AdditionalScopes ?? jobRecord.AdditionalScopes;
                 jobRecord.AssociatedPrerequisites = AssociatedPrerequisites ?? jobRecord.AssociatedPrerequisites;
-                this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
+                // TaskList[0] = new Task<Tuple<double, double>>(() => this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord));
+                var res = this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
+                JobEventMappingsRU += res.Item1;
             }
-
+            // TaskList[0].Start();
+            // TaskList[0].Wait();
             timer.EndTimer(JobEventMappingsTimer);
-            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
 
             timer.StartTimer();
+
             var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
             var oldEntry = GetEventOldTable(EventName, scope);
 
-            var entry = CalculateState(oldEntry, newEntry);
+            var existingState = CalculateState(oldEntry, newEntry);
+            var targetName = EventName.Equals(EntityName) ? EntityName : existingState != null ? existingState.EventName : EventName;
 
-            if (EventName.Equals(EntityName))
+            var isStatusChanged = this.eventsDataSource.SatisfyEvent(existingState, out Events newState, targetName, scope, jobId, taskId, EventArguments, AdditionalScopes, AssociatedPrerequisites, jobType, workflow);
+
+            if (isStatusChanged)
             {
-                this.eventsDataSource.SatisfyEvent(entry, EventName, scope, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow);
+                if (existingState != null && existingState.EventName != targetName)
+                {
+                    existingState.Status = EventsDataSource.Obsolete;
+                    //TaskList[1] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(existingState));
+                    var res1 = this.eventsDataSource.UpdateEvent(existingState);
+                    this.EventsRU += res1.Item1;
+
+                }
+                // TaskList[2] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(newState));
+                var res2 = this.eventsDataSource.UpdateEvent(newState);
+                this.EventsRU += res2.Item1;
+
             }
-            else
-            {
-                this.eventsDataSource.SatisfyEvent(entry, entry != null ? entry.EventName : EventName, scope, jobId, taskId, EventArguments, AdditionalScopes, jobType, workflow);
-            }
-            timer.EndTimer((int)EventsTimer);
-            this.EventsRU += this.eventsDataSource.GetEventsRU();
-            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
+            // TaskList[1].Start();
+            // TaskList[2].Start();
+            timer.EndTimer(EventsTimer);
+            this.EventsRU += this.eventsDataSource.GetRequestCharge();
+            /*
+            Task.WaitAll(TaskList);
+
+            this.JobEventMappingsRU += TaskList[0].Result.Item1;
+            timer.UpdateTimer(JobEventMappingsTimer, TaskList[0].Result.Item2);
+
+            this.EventsRU += TaskList[1].Result.Item1 + TaskList[2].Result.Item1;
+            timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2); */
 
         }
 
@@ -216,16 +294,27 @@ namespace EventConvergencePOCTest.Src
         {
             ResetStatistics();
 
+            /*
+            Task<Tuple<double, double>>[] TaskList =    {
+                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); } ),
+                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); }),
+                                                            new Task<Tuple<double, double>>(() => { return new Tuple<double, double>( 0, 0 ); }),
+                                                         };
+            */
+
             timer.StartTimer();
             var altNames = this.catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
             timer.EndTimer(CatalogTimer);
             this.CatalogRU += this.catalogDataSource.GetCatalogRU();
 
             timer.StartTimer();
+            
             if (jobId != null && taskId != null)
             {
                 // read Job-Event container if record found, update state to registered
                 var jobRecord = this.jobEventMappingsDataSource.GetEventForJob(jobId, taskId, altNames, scope);
+                this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
+
                 if (jobRecord == null)
                 {
                     jobRecord = new JobEventMappings
@@ -234,43 +323,66 @@ namespace EventConvergencePOCTest.Src
                         Scope = scope,
                         JobId = jobId,
                         TaskId = taskId,
-                        BindingState = "Active",
+                        BindingState = JobEventMappingsDataSource.BindingStateActive,
                     };
                 }
                 var previousStatus = jobRecord.Status;
-                jobRecord.Status = "Canceled";
+                jobRecord.Status = JobEventMappingsDataSource.Canceled;
                 jobRecord.EventTimestamp = DateTime.UtcNow;
-                this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
-                timer.EndTimer(JobEventMappingsTimer);
-                if(!previousStatus.Equals("Satisfied"))
+
+                // TaskList[0] = new Task<Tuple<double, double>>(() => this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord));
+                var res = this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
+                this.JobEventMappingsRU += res.Item1;
+                if (previousStatus == null || !previousStatus.Equals(JobEventMappingsDataSource.Satisfied))
                 {
+                    // TaskList[0].Start();
+                    // Task.WaitAll(TaskList[0]);
+                    timer.EndTimer(JobEventMappingsTimer);
                     return;
                 }
             }
+            // TaskList[0].Start();
+            // TaskList[0].Wait();
 
             timer.EndTimer(JobEventMappingsTimer);
-            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
 
 
             timer.StartTimer();
             var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
             var oldEntry = GetEventOldTable(EventName, scope);
 
-            var entry = CalculateState(oldEntry, newEntry);
+            var existingState = CalculateState(oldEntry, newEntry);
+            var targetName = EventName.Equals(EntityName) ? EntityName : existingState != null ? existingState.EventName : EventName;
 
-            if (EventName.Equals(EntityName))
+            var isStatusChanged = this.eventsDataSource.CancelEvent(existingState, out Events newState, targetName, altNames, scope, false, jobId, taskId);
+
+
+            if (isStatusChanged)
             {
-                this.eventsDataSource.CancelEvent(entry, EventName, altNames, scope, false, jobId, taskId);
-            }
-            else
-            {
-                this.eventsDataSource.CancelEvent(entry, entry != null ? entry.EventName : EventName, altNames, scope, false, jobId, taskId);
-            }
+                if (existingState != null && existingState.EventName != targetName)
+                {
+                    existingState.Status = EventsDataSource.Obsolete;
+                    // TaskList[1] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(existingState));
+                   var res = this.eventsDataSource.UpdateEvent(existingState);
+                   this.EventsRU += res.Item1;
 
-            timer.EndTimer(EventsTimer);
-            this.EventsRU += this.eventsDataSource.GetEventsRU();
-            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
+                }
+                var res1 = this.eventsDataSource.UpdateEvent(newState);
+                this.EventsRU += res1.Item1;
 
+            }
+            timer.EndTimer((int)EventsTimer);
+            this.EventsRU += this.eventsDataSource.GetRequestCharge();
+            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
+            /*
+            Task.WaitAll(TaskList);
+
+            this.JobEventMappingsRU += TaskList[0].Result.Item1;
+            timer.UpdateTimer(JobEventMappingsTimer, TaskList[0].Result.Item2);
+
+            this.EventsRU += TaskList[1].Result.Item1 + TaskList[2].Result.Item1;
+            timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2);
+            */
         }
 
 

@@ -1,9 +1,13 @@
-﻿using EventConvergencePOCTest.Contracts;
+﻿using Azure;
+using EventConvergencePOCTest.Contracts;
 using Microsoft.Azure.Cosmos;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Eventing.Reader;
 using System.Linq;
 using System.Net;
+using System.Runtime.Remoting.Messaging;
+using System.Threading.Tasks;
 
 namespace EventConvergencePOCTest.Src
 {
@@ -12,12 +16,17 @@ namespace EventConvergencePOCTest.Src
         CosmosClient cosmosClient;
         Database EventDatabase;
         Dictionary<string, Container> EventsContainers;
-        string databaseId = "EventsTest";
+        static string databaseId = "Events";
         List<string> EventsContainerId = new List<string> { "Events" };
 
-        double RCEvents = 0;
-        double RCCatalog = 0;
-        double RCJobEventMappings = 0;
+        public static string Canceled = "Canceled";
+        public static string Registered = "Registered";
+        public static string Satisfied = "Satisfied";
+        public static string Obsolete = "Obsolete";
+
+
+        double requestCharge = 0;
+        double requestExecutionTime = 0;
 
         CatalogDataSource catalogDataSource;
         JobEventMappingsDataSource jobEventMappingsDataSource;
@@ -56,9 +65,8 @@ namespace EventConvergencePOCTest.Src
 
         private void resetTimings()
         {
-            RCCatalog = 0;
-            RCEvents = 0;
-            RCJobEventMappings = 0;
+            requestCharge = 0;
+            requestExecutionTime = 0;
         }
 
         public Events GetEvent(List<string> altNames, string scope)
@@ -71,9 +79,10 @@ namespace EventConvergencePOCTest.Src
                 try
                 {
                     var eventsEntry = EventsContainers[EventsContainerId[0]].ReadItemAsync<Events>(name.ToLower(), new PartitionKey(scope.ToLower())).GetAwaiter().GetResult();
-                    RCEvents += eventsEntry.RequestCharge;
-     
-                    if (eventsEntry != null && eventsEntry.Resource.Status != "Obsolete")
+                    requestCharge += eventsEntry.RequestCharge;
+                    requestExecutionTime += eventsEntry.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
+
+                    if (eventsEntry != null && eventsEntry.Resource.Status != Obsolete)
                     {
                         return eventsEntry.Resource;
                     }
@@ -93,12 +102,11 @@ namespace EventConvergencePOCTest.Src
             return null;
         }
 
-        public void RegisterEvent(Events oldState, string EventName, string scope, bool HardSet, string jobId, string taskId, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, string jobType = null, string workflow = null)
+        public bool RegisterEvent(Events oldState, out Events newState, string EventName, string scope, bool HardSet, string jobId, string taskId, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, List<Dictionary<string, string>> prereq = null, string jobType = null, string workflow = null)
         {
-            resetTimings();
             bool isStateChanged = true;
 
-            Events newState = new Events
+            newState = new Events
             {
                 EventName = EventName,
                 Scope = scope,
@@ -109,31 +117,28 @@ namespace EventConvergencePOCTest.Src
                 AssociatedJobType = jobType,
                 AssociatedWorkflow = workflow,
                 AdditionalScopes = AdditionalScopes,
+                AssociatedPrerequisites = prereq,
                 SatisfyBy = 0,
-                Status = "Registered"
+                Status = Registered
             };
 
             if (!HardSet && oldState != null)
             {
-                if (oldState.Status == "Satisfied")
+                if (oldState.Status == Satisfied)
                 {
-                    return;
+                    isStateChanged = false;
                 }
                 // merge arguments??
             }
 
-            if (isStateChanged)
-            {
-                UpdateEvent(oldState, newState);
-            }
+            return isStateChanged;
         }
 
-        public void SatisfyEvent(Events oldState, string EventName, string scope, string jobId, string taskId, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, string jobType = null, string workflow = null)
+        public bool SatisfyEvent(Events oldState, out Events newState, string EventName, string scope, string jobId, string taskId, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, List<Dictionary<string, string>> prereq = null, string jobType = null, string workflow = null)
         {
-            resetTimings();
             bool isStateChanged = true;
 
-            Events newState = new Events
+            newState = new Events
             {
                 EventName = EventName,
                 Scope = scope,
@@ -143,80 +148,92 @@ namespace EventConvergencePOCTest.Src
                 Arguments = EventArguments,
                 AssociatedJobType = jobType,
                 AssociatedWorkflow = workflow,
-                Status = "Satisfied",
-                SatisfyBy = oldState != null ? oldState.SatisfyBy + 1 : 1,
+                Status = Satisfied,
+                AssociatedPrerequisites= prereq,
+                SatisfyBy = jobId == null ? 0 : 1,
                 AdditionalScopes = AdditionalScopes
-            };
-
-            if (isStateChanged)
-            {
-                UpdateEvent(oldState, newState);
-            }
-        }
-
-        public void CancelEvent(Events oldState, string EventName, List<string> altNames, string scope, bool HardSet = false, string jobId = null, string taskId = null)
-        {
-            resetTimings();
-
-            bool isStateChanged = true;
-
-            Events newState = new Events
-            {
-                EventName = EventName,
-                Scope = scope,
-                EventTimestamp = DateTime.UtcNow,
-                Status = "Canceled",
-                SatisfyBy = 0,
             };
 
             if (oldState != null)
             {
-                List<JobEventMappings> jobEventMappings = null;
-
-                if (oldState.Status == "Canceled")
+                if (oldState.Status == Satisfied)
                 {
-                    // Event already in canceled state - no need to update
-                    isStateChanged = false;
-                }
-
-                if (HardSet)
-                {
-                    // Stateless operation requested through the Rest API call
-                    newState.Status = "Canceled";
-                }
-                else if (oldState.Status == "Registered")
-                {
-                    jobEventMappings = this.jobEventMappingsDataSource.GetAllJobsRegisterEvent(altNames, scope);
-                    RCJobEventMappings += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
-                }
-                else if (oldState.Status == "Satisfied")
-                {
-                    newState.SatisfyBy = oldState.SatisfyBy--;
-                }
-
-                if (newState.SatisfyBy == 0 && (jobEventMappings == null || jobEventMappings.Count == 0) )
-                {
-                    // No jobs published or registered this event - cancel the event
-                    newState.Status = "Canceled";
-                }
-                else if (oldState.AssociatedJobId.Equals(jobId) && oldState.AssociatedTaskId.Equals(taskId))
-                {
-                    // There are jobs that published or registered this event - but the job/task that satisfied the event is being canceled
-                    // So we need to change the job association
-                    if (newState.SatisfyBy > 1)
+                    if (jobId == null || (oldState.AssociatedJobId == jobId && oldState.AssociatedTaskId == taskId))
                     {
-                        jobEventMappings = this.jobEventMappingsDataSource.GetAllJobsEmitEvent(altNames, scope);
-                        RCJobEventMappings += this.jobEventMappingsDataSource.GetJobEventMappingsRU();
+                        isStateChanged = false;
+                    }
+                    else
+                    {
+                        newState.SatisfyBy += oldState.SatisfyBy;
+                    }
+                }
+            }
+
+            return isStateChanged;
+        }
+
+        public bool CancelEvent(Events oldState, out Events newState, string EventName, List<string> altNames, string scope, bool HardSet = false, string jobId = null, string taskId = null)
+        {
+            bool isStateChanged = true;
+
+            newState = new Events
+            {
+                EventName = EventName,
+                Scope = scope,
+                EventTimestamp = DateTime.UtcNow,
+                Status = Canceled,
+                // SatisfyBy = 0,
+            };
+
+            if (oldState == null)
+            {
+                throw new Exception("Operation not allowed");
+            }
+
+            List<JobEventMappings> jobEventMappings = null;
+
+            if (oldState.Status == Canceled)
+            {
+                // Event already in canceled state - no need to update
+                isStateChanged = false;
+                return isStateChanged;
+            }
+
+            if (HardSet)
+            {
+                // Stateless operation requested through the Rest API call
+                return isStateChanged;
+            }
+
+            if (oldState.Status == Registered)
+            {
+                throw new Exception("Cancel was called on a Registered Event. If the event is intended to be canceled, then call with HardSet = true !");
+            }
+
+            if (oldState.Status == Satisfied)
+            {
+                newState.SatisfyBy = oldState.SatisfyBy--;
+
+                if (newState.SatisfyBy == 0 || (oldState.AssociatedTaskId == taskId && oldState.AssociatedJobId == jobId))
+                {
+                    jobEventMappings = this.jobEventMappingsDataSource.GetAllJobsEmitOrRegisterEvent(altNames, scope);
+                    // Find the last job that published or registered this event based on the event status
+                    var mappings = jobEventMappings?.Where((x) => (x.JobId == jobId && x.TaskId == taskId));
+                    if (mappings != null && mappings.Count() > 0)
+                    {
+                        jobEventMappings?.Remove(mappings?.First());
                     }
 
-                    newState.Status = oldState.Status;
+                    var jobMappings1 = jobEventMappings.Where((x) => x.Status == Satisfied)?.ToList();
+                    var jobMappings2 = jobEventMappings.Where((x) => x.Status == Registered)?.ToList();
+                    jobEventMappings = jobMappings1?.Count() > 0 ? jobMappings1 : jobMappings2;
 
-                    // Find the last job that published or registered this event based on the event status
+                    JobEventMappings JobData = null;
                     jobEventMappings?.Sort((x, y) => DateTime.Compare(x.EventTimestamp, y.EventTimestamp));
-                    JobEventMappings JobData = jobEventMappings.LastOrDefault();
-
-                    if (JobData != null)
+                    if (jobEventMappings != null && jobEventMappings.Count > 0)
                     {
+                        JobData = jobEventMappings.LastOrDefault();
+                        newState.Status = JobData.Status;
                         newState.AssociatedJobId = JobData.JobId;
                         newState.AssociatedTaskId = JobData.TaskId;
                         newState.AssociatedJobType = JobData.JobType;
@@ -225,68 +242,48 @@ namespace EventConvergencePOCTest.Src
                         newState.AssociatedPrerequisites = JobData.AssociatedPrerequisites;
                         newState.AdditionalScopes = JobData.AdditionalScopes;
                     }
+                    else
+                    {
+                        newState.Status = Canceled;
+                        newState.SatisfyBy = 0;
+                    }
                 }
-                else
+                
+                if (newState.SatisfyBy > 1)
                 {
-                    // There are jobs that published or registered this event - and the job/task associated with the event is not being canceled
-                    newState.Status = oldState.Status;
-                    newState.AssociatedJobId = oldState.AssociatedJobId;
-                    newState.AssociatedTaskId = oldState.AssociatedTaskId;
-                    newState.AssociatedWorkflow = oldState.AssociatedWorkflow;
-                    newState.Arguments = oldState.Arguments;
-                    newState.AssociatedPrerequisites = oldState.AssociatedPrerequisites;
-                    newState.AdditionalScopes = oldState.AdditionalScopes;
+                        newState.Status = Satisfied;
+                        newState.AssociatedJobId = oldState.AssociatedJobId;
+                        newState.AssociatedTaskId = oldState.AssociatedTaskId;
+                        newState.AssociatedJobType = oldState.AssociatedJobType;
+                        newState.AssociatedWorkflow = oldState.AssociatedWorkflow;
+                        newState.Arguments = oldState.Arguments;
+                        newState.AssociatedPrerequisites = oldState.AssociatedPrerequisites;
+                        newState.AdditionalScopes = oldState.AdditionalScopes;
                 }
             }
 
-            if (isStateChanged)
-            {
-                UpdateEvent(oldState, newState);
-            }
+            return isStateChanged;
         }
 
-        public double GetEventsRU()
+        public double GetRequestCharge()
         {
-            return RCEvents;
+            return requestCharge;
         }
 
-        public double GetJobEventMappingRU()
+        public double GetExecutionTime()
         {
-            return this.RCJobEventMappings;
+            return requestExecutionTime;
         }
 
-        public double GetCatalogRU()
+        public Tuple<double, double> UpdateEvent(Events record)
         {
-            return this.RCCatalog;
-        }
-
-        private void UpdateEvent(Events oldState, Events newState)
-        {
-            /* Obsolete event when record exists with alias name and the request comes with new entity name */
-            if (oldState != null && oldState.EventName != newState.EventName)
-            {
-                oldState.Status = "Obsolete";
-                oldState.id = $"{oldState.EventName}".ToLower();
-                oldState.pk = $"{oldState.Scope}".ToLower();
-                try
-                {
-                    var response1 = EventsContainers[EventsContainerId[0]].UpsertItemAsync<Events>(oldState).GetAwaiter().GetResult();
-                    RCEvents += response1.RequestCharge;
-                }
-                catch (Exception ex)
-                {
-                    // Console.WriteLine(ex.Message);
-                    throw ex;
-                }
-            }
-
             /* Update the new state */
             try
             {
-                newState.id = $"{newState.EventName}".ToLower();
-                newState.pk = $"{newState.Scope}".ToLower();
-                var response = EventsContainers[EventsContainerId[0]].UpsertItemAsync<Events>(newState).GetAwaiter().GetResult();
-                RCEvents += response.RequestCharge;
+                record.id = $"{record.EventName}".ToLower();
+                record.pk = $"{record.Scope}".ToLower();
+                var response = EventsContainers[EventsContainerId[0]].UpsertItemAsync<Events>(record).GetAwaiter().GetResult();
+                return new Tuple<double, double>(response.RequestCharge, response.Diagnostics.GetClientElapsedTime().TotalMilliseconds);
             }
             catch (Exception ex)
             {

@@ -50,7 +50,7 @@ namespace EventConvergencePOCTest.Src
 
         public List<string> GetCatalogEntity(string EventName, out string EntityNewName)
         {
-            // resetTimings();
+            resetTimings();
 
             List<string> altNames = new List<string> { EventName };
 
@@ -61,7 +61,7 @@ namespace EventConvergencePOCTest.Src
                 // find event with event name and alias name in EventsContainer
 
                 EntityNewName = null;
-                // RCCatalog += entry.RequestCharge;
+                RCCatalog += entry.RequestCharge;
 
                 if (entry?.Resource != null)
                 {

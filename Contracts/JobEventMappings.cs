@@ -10,7 +10,8 @@ namespace EventConvergencePOCTest.Contracts
     {
         // For Cosmos Operations
         public string id { get; set; }
-        public string pk { get; set; }
+        public string pk1 { get; set; }
+        public string pk2 { get; set; }
 
         // ------- Payload ------------------------------------
         public string JobId { get; set; }
