@@ -3,11 +3,14 @@ using EventConvergencePOCTest.Contracts;
 using Microsoft.Azure.Cosmos;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics.Eventing.Reader;
 using System.Linq;
 using System.Net;
 using System.Runtime.Remoting.Messaging;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
+using Container = Microsoft.Azure.Cosmos.Container;
 
 namespace EventConvergencePOCTest.Src
 {
@@ -16,8 +19,8 @@ namespace EventConvergencePOCTest.Src
         CosmosClient cosmosClient;
         Database EventDatabase;
         Dictionary<string, Container> EventsContainers;
-        static string databaseId = "Events";
-        List<string> EventsContainerId = new List<string> { "Events" };
+        static string databaseId = "EventsTest1";
+        List<string> EventsContainerId = new List<string> { "Events1" };
 
         public static string Canceled = "Canceled";
         public static string Registered = "Registered";
@@ -27,12 +30,14 @@ namespace EventConvergencePOCTest.Src
 
         double requestCharge = 0;
         double requestExecutionTime = 0;
+        List<string> requestChargePerDbOperation = new List<string>();
 
         CatalogDataSource catalogDataSource;
         JobEventMappingsDataSource jobEventMappingsDataSource;
 
         public EventsDataSource(CosmosClient cosmosClient)
         {
+            requestChargePerDbOperation.Clear();
             this.cosmosClient = cosmosClient;
             catalogDataSource = new CatalogDataSource(cosmosClient);
             jobEventMappingsDataSource = new JobEventMappingsDataSource(cosmosClient);
@@ -45,6 +50,17 @@ namespace EventConvergencePOCTest.Src
             this.jobEventMappingsDataSource = jobEventMappingsDS;
         }
 
+        public void ClearCharge()
+        {
+            requestChargePerDbOperation?.Clear();
+        }
+
+        public List<string> GetRUPerDBoperation()
+        {
+            return requestChargePerDbOperation;
+        }
+
+
         public void GetEventsContainer()
         {
             if (EventsContainers != null)
@@ -52,15 +68,44 @@ namespace EventConvergencePOCTest.Src
                 return;
             }
 
+
             EventsContainers = new Dictionary<string, Container>();
 
             EventDatabase = cosmosClient.CreateDatabaseIfNotExistsAsync(databaseId).GetAwaiter().GetResult()?.Database;
-            var partitionKey = "pk";
-            var containerProperties = new ContainerProperties(this.EventsContainerId[0], $"/{partitionKey}");
+            var partitionKey = "/pk";
             var throughputProperties = ThroughputProperties.CreateAutoscaleThroughput(1000);
-            this.EventsContainers[EventsContainerId[0]] = EventDatabase.CreateContainerIfNotExistsAsync(
-                containerProperties,
-                throughputProperties).GetAwaiter().GetResult()?.Container;
+
+            var container = EventDatabase.DefineContainer(this.EventsContainerId[0], partitionKey)
+                .WithIndexingPolicy()
+                .WithAutomaticIndexing(false)
+                .WithIncludedPaths()
+                .Path("/")
+                .Path("/EventName/?")
+                .Path("/Scope/?")
+                .Path("/pk/?")
+                .Path("/AdditionalScopes/[]/Scope/?")
+                .Path("/AssociatedJobId/?")
+                .Path("/EventTimestamp/*")
+                .Attach()
+                .WithExcludedPaths()
+                .Path("/_ts/?")
+                .Path("/_etag/?")
+                .Path("/AdditionalScopes/[]/Name/?")
+                .Path("/AssociatedTaskId/?")
+                .Path("/AssociatedJobType/?")
+                .Path("/AssociatedWorkflow/?")
+                .Path("/AssociatedPrerequisites/*")
+                .Path("/FirstSatisfactionTimestamp/?")
+                .Path("/TimeToSatisfy/?")
+                .Path("/ExpirationTime/?")
+                .Path("/Arguments/*")
+                .Path("/SatisfyBy/?")
+                .Path("/Status/?")
+                .Attach()
+                .Attach()
+                .CreateIfNotExistsAsync(throughputProperties).GetAwaiter().GetResult().Container;
+
+            this.EventsContainers[EventsContainerId[0]] = container;
         }
 
         private void resetTimings()
@@ -69,7 +114,7 @@ namespace EventConvergencePOCTest.Src
             requestExecutionTime = 0;
         }
 
-        public Events GetEvent(List<string> altNames, string scope)
+        public CosmosDbItem<Events> GetEvent(List<string> altNames, string scope)
         {
             resetTimings();
 
@@ -78,13 +123,19 @@ namespace EventConvergencePOCTest.Src
             {
                 try
                 {
-                    var eventsEntry = EventsContainers[EventsContainerId[0]].ReadItemAsync<Events>(name.ToLower(), new PartitionKey(scope.ToLower())).GetAwaiter().GetResult();
+                    CosmosDbItem<Events> cosmosDBItem = new CosmosDbItem<Events>();
+                    var id = $"{scope}".ToLower();
+                    var pk = name.ToLower();
+                    var eventsEntry = EventsContainers[EventsContainerId[0]].ReadItemAsync<Events>(id, new PartitionKey(pk)).GetAwaiter().GetResult();
                     requestCharge += eventsEntry.RequestCharge;
                     requestExecutionTime += eventsEntry.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
+                    requestChargePerDbOperation.Add($"Read {eventsEntry.RequestCharge}");
 
                     if (eventsEntry != null && eventsEntry.Resource.Status != Obsolete)
                     {
-                        return eventsEntry.Resource;
+                        cosmosDBItem.payload = eventsEntry.Resource;
+                        cosmosDBItem.etag = eventsEntry.ETag;
+                        return cosmosDBItem;
                     }
 
                 }
@@ -149,7 +200,7 @@ namespace EventConvergencePOCTest.Src
                 AssociatedJobType = jobType,
                 AssociatedWorkflow = workflow,
                 Status = Satisfied,
-                AssociatedPrerequisites= prereq,
+                AssociatedPrerequisites = prereq,
                 SatisfyBy = jobId == null ? 0 : 1,
                 AdditionalScopes = AdditionalScopes
             };
@@ -248,21 +299,92 @@ namespace EventConvergencePOCTest.Src
                         newState.SatisfyBy = 0;
                     }
                 }
-                
+
                 if (newState.SatisfyBy > 1)
                 {
-                        newState.Status = Satisfied;
-                        newState.AssociatedJobId = oldState.AssociatedJobId;
-                        newState.AssociatedTaskId = oldState.AssociatedTaskId;
-                        newState.AssociatedJobType = oldState.AssociatedJobType;
-                        newState.AssociatedWorkflow = oldState.AssociatedWorkflow;
-                        newState.Arguments = oldState.Arguments;
-                        newState.AssociatedPrerequisites = oldState.AssociatedPrerequisites;
-                        newState.AdditionalScopes = oldState.AdditionalScopes;
+                    newState.Status = Satisfied;
+                    newState.AssociatedJobId = oldState.AssociatedJobId;
+                    newState.AssociatedTaskId = oldState.AssociatedTaskId;
+                    newState.AssociatedJobType = oldState.AssociatedJobType;
+                    newState.AssociatedWorkflow = oldState.AssociatedWorkflow;
+                    newState.Arguments = oldState.Arguments;
+                    newState.AssociatedPrerequisites = oldState.AssociatedPrerequisites;
+                    newState.AdditionalScopes = oldState.AdditionalScopes;
                 }
             }
 
             return isStateChanged;
+        }
+
+        public void ComputeState(string EventName, List<string> altNames, string Scope, out CosmosDbItem<Events> newRecord, DateTime eventTimestamp, bool )
+        {
+
+            newRecord = new CosmosDbItem<Events>();
+            var newState = new Events() { EventName = EventName, Scope = Scope, EventTimestamp = eventTimestamp };
+
+            var allJobEventMappings = this.jobEventMappingsDataSource.GetAllJobsEmitOrRegisterEvent(altNames, Scope);
+            // Find the last job that published or registered this event based on the event status
+            var jobEventMappings = useTimestamp ? allJobEventMappings.Where((x) => x.Status == Satisfied && x.EventTimestamp > newState.EventTimestamp)?.ToList() :
+                                              allJobEventMappings.Where((x) => x.Status == Satisfied)?.ToList();
+
+            if (jobEventMappings?.Count() > 0)
+            {
+                jobEventMappings = useTimestamp ? allJobEventMappings.Where((x) => x.Status == Registered && x.EventTimestamp > newState.EventTimestamp)?.ToList() :
+                                              allJobEventMappings.Where((x) => x.Status == Registered)?.ToList();
+            }
+
+            JobEventMappings JobData = null;
+
+            jobEventMappings?.Sort((x, y) => DateTime.Compare(x.EventTimestamp, y.EventTimestamp));
+
+            if (jobEventMappings != null && jobEventMappings.Count > 0)
+            {
+                JobData = jobEventMappings.LastOrDefault();
+                newState.Status = JobData.Status;
+                newState.AssociatedJobId = JobData.JobId;
+                newState.AssociatedTaskId = JobData.TaskId;
+                newState.AssociatedJobType = JobData.JobType;
+                newState.AssociatedWorkflow = JobData.Workflow;
+                newState.Arguments = JobData.Arguments;
+                newState.AssociatedPrerequisites = JobData.AssociatedPrerequisites;
+                newState.AdditionalScopes = JobData.AdditionalScopes;
+                newState.SatisfyBy = 0;
+                newState.TimeToSatisfy = JobData.TimeToSatisfy;
+            }
+            else
+            {
+                newState.Status = Canceled;
+                newState.SatisfyBy = 0;
+            }
+
+            newState.EventTimestamp = DateTime.Now;
+            newRecord.payload = newState;
+        }
+
+        public bool ComputeEventState(string EventName, List<string> altNames, string Scope, out CosmosDbItem<Events> newRecord, bool useTimestamp = true)
+        {
+
+            var eventResponse = GetEvent(altNames, Scope);
+
+            var EventTimestamp = DateTime.MinValue;
+
+            if (useTimestamp && eventResponse != null)
+            {
+                EventTimestamp = eventResponse.payload.EventTimestamp;
+            }
+
+            this.ComputeState(EventName, altNames, Scope, out newRecord, EventTimestamp);
+
+            newRecord.etag = eventResponse?.etag;
+            var newState = newRecord.payload;
+
+            if(eventResponse != null && newState.Status == eventResponse.payload.Status &&
+                newState.AssociatedJobId == eventResponse.payload.AssociatedJobId &&
+                newState.AssociatedTaskId == eventResponse.payload.AssociatedTaskId)
+            {
+                return false;
+            }
+            return true;
         }
 
         public double GetRequestCharge()
@@ -275,14 +397,25 @@ namespace EventConvergencePOCTest.Src
             return requestExecutionTime;
         }
 
-        public Tuple<double, double> UpdateEvent(Events record)
+        public Tuple<double, double> UpdateEvent(CosmosDbItem<Events> record)
         {
             /* Update the new state */
             try
             {
-                record.id = $"{record.EventName}".ToLower();
-                record.pk = $"{record.Scope}".ToLower();
-                var response = EventsContainers[EventsContainerId[0]].UpsertItemAsync<Events>(record).GetAwaiter().GetResult();
+                record.payload.id = record.payload.Scope.ToLower();
+                record.payload.pk = record.payload.EventName.ToLower();
+                record.payload.EventTimestamp = DateTime.Now;
+
+                ItemResponse<Events> response = null;
+                if (record.etag != null)
+                {
+                    response = EventsContainers[EventsContainerId[0]].ReplaceItemAsync<Events>(record.payload, record.payload.id, new PartitionKey(record.payload.pk), requestOptions: new ItemRequestOptions() { IfMatchEtag = record.etag }).GetAwaiter().GetResult();
+                }
+                else
+                {
+                    response = EventsContainers[EventsContainerId[0]].CreateItemAsync<Events>(record.payload, new PartitionKey(record.payload.pk)).GetAwaiter().GetResult();
+                }
+                requestChargePerDbOperation.Add($"Write {response.RequestCharge}");
                 return new Tuple<double, double>(response.RequestCharge, response.Diagnostics.GetClientElapsedTime().TotalMilliseconds);
             }
             catch (Exception ex)

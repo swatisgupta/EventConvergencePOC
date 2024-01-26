@@ -36,11 +36,9 @@ namespace EventConvergencePOCTest.Tests
                                 {
                                     new Dictionary<string, string> { { "Name", "Network.ANPArtifacts.Seed" },
                                         { "Scope", "Cluster.LON22PrdApp10-02" },
-                                        { "IsStaticEntity", "true" }
                                     },
                                     new Dictionary<string, string> { { "Name", "Network.ANPArtifacts.Seed" },
                                         { "Scope", "Cluster.SN1PrdApp11" },
-                                        { "IsStaticEntity", "true" }
                                     },
                                 },
             Arguments = new Dictionary<string, string> { { "SlbV2BuildPath", "\\\\exme.gbl.eaglex.ic.gov\\Builds\\branches\\git_networking_slb_hotfix_0_11_202_0" },
@@ -82,7 +80,6 @@ namespace EventConvergencePOCTest.Tests
                                                               "Shoebox.Services.InternallyReady",
                                                               "RescuePP.Milestones.InternallyReady" };
 
-            Thread.Sleep(5000);
 
             LoadTestRegister();
             
@@ -106,13 +103,15 @@ namespace EventConvergencePOCTest.Tests
                                                               "Milestones.OneBranchRelease.InternallyReady",
                                                               "Services.Shoebox.InternallyReady",
                                                               "Milestones.RescuePP.InternallyReady" };
-            Thread.Sleep(5000);
-
-            LoadTestRegister();
+           LoadTestRegister();
             
-            LoadTestSatisfy();
+           LoadTestSatisfy();
              
-            LoadTestCancel();
+           LoadTestCancel();
+
+           LoadTestGet();
+
+           LoadTestGetSimple();
             
         }
 
@@ -125,12 +124,15 @@ namespace EventConvergencePOCTest.Tests
             System.IO.Directory.CreateDirectory($"{resultPath}");
             System.IO.File.WriteAllLines($"{resultPath}\\RegisterTimes.txt", overall);
             System.IO.File.WriteAllLines($"{resultPath}\\RegisterRU.txt", ru);
+            System.IO.File.WriteAllLines($"{resultPath}\\RegisterRUMappings.txt", test.GetRUPerDBOPerationMappings());
+            System.IO.File.WriteAllLines($"{resultPath}\\RegisterRUEvents.txt", test.GetRUPerDBOPerationEvents());
             Random rnd = new Random(1000);
             int jobIndex = 0;
             for (int i = 0; i < MAX_ITERATIONS; i++)
             {
                 overall.Clear();
                 ru.Clear();
+                test.ClearRU();
                 for (int j = 0; j < MAX_EVENTS; j++)
                 {
                     try
@@ -154,6 +156,95 @@ namespace EventConvergencePOCTest.Tests
 
                 System.IO.File.AppendAllLines($"{resultPath}\\RegisterTimes.txt", overall);
                 System.IO.File.AppendAllLines($"{resultPath}\\RegisterRU.txt", ru);
+                System.IO.File.AppendAllLines($"{resultPath}\\RegisterRUMappings.txt", test.GetRUPerDBOPerationMappings());
+                System.IO.File.AppendAllLines($"{resultPath}\\RegisterRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
+            }
+
+        }
+
+        public static void LoadTestGet()
+        {
+            EventsService test = new EventsService();
+            test.CreateConnection();
+            List<string> overall = new List<string>();
+            List<string> ru = new List<string>();
+            System.IO.Directory.CreateDirectory($"{resultPath}");
+
+            System.IO.File.WriteAllLines($"{resultPath}\\GetTimes.txt", overall);
+            System.IO.File.WriteAllLines($"{resultPath}\\GetRU.txt", ru);
+            System.IO.File.WriteAllLines($"{resultPath}\\GetRUMappings.txt", test.GetRUPerDBOPerationMappings());
+            System.IO.File.WriteAllLines($"{resultPath}\\GetRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
+            Random rnd = new Random(1000);
+            int jobIndex = 0;
+            for (int i = 0, j = 0; i < MAX_ITERATIONS; i++)
+            {
+                overall.Clear();
+                ru.Clear();
+                test.ClearRU();
+                for (j = 0; j < MAX_EVENTS; j++)
+                {
+                    try
+                    {
+                        test.GetStatus(EventNames[j], Scope);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Cancel: Exception at iteration {i * MAX_EVENTS + j} ({EventNames[j]}-{Scope}) Message: {e.Message}");
+                    }
+                    overall.Add(test.GetExecutionTimes());
+                    ru.Add(test.GetRUConsumption());
+                }
+                Console.WriteLine($"Get: Iteration {i + 1} complete");
+
+                System.IO.File.AppendAllLines($"{resultPath}\\GetTimes.txt", overall);
+                System.IO.File.AppendAllLines($"{resultPath}\\GetRU.txt", ru);
+                System.IO.File.AppendAllLines($"{resultPath}\\GetRUMappings.txt", test.GetRUPerDBOPerationMappings());
+                System.IO.File.AppendAllLines($"{resultPath}\\GetRUEvents.txt", test.GetRUPerDBOPerationEvents());
+            }
+            
+        }
+
+        public static void LoadTestGetSimple()
+        {
+            EventsService test = new EventsService();
+            test.CreateConnection();
+            List<string> overall = new List<string>();
+            List<string> ru = new List<string>();
+            System.IO.Directory.CreateDirectory($"{resultPath}");
+
+            System.IO.File.WriteAllLines($"{resultPath}\\GetSTimes.txt", overall);
+            System.IO.File.WriteAllLines($"{resultPath}\\GetSRU.txt", ru);
+            System.IO.File.WriteAllLines($"{resultPath}\\GetSRUMappings.txt", test.GetRUPerDBOPerationMappings());
+            System.IO.File.WriteAllLines($"{resultPath}\\GetSRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
+            Random rnd = new Random(1000);
+            int jobIndex = 0;
+            for (int i = 0, j = 0; i < MAX_ITERATIONS; i++)
+            {
+                overall.Clear();
+                ru.Clear();
+                test.ClearRU();
+                for (j = 0; j < MAX_EVENTS; j++)
+                {
+                    try
+                    {
+                        test.GetStatusSimple(EventNames[j], Scope);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Cancel: Exception at iteration {i * MAX_EVENTS + j} ({EventNames[j]}-{Scope}) Message: {e.Message}");
+                    }
+                    overall.Add(test.GetExecutionTimes());
+                    ru.Add(test.GetRUConsumption());
+                }
+                Console.WriteLine($"GetSimple: Iteration {i + 1} complete");
+
+                System.IO.File.AppendAllLines($"{resultPath}\\GetSTimes.txt", overall);
+                System.IO.File.AppendAllLines($"{resultPath}\\GetSRU.txt", ru);
+                System.IO.File.AppendAllLines($"{resultPath}\\GetSRUMappings.txt", test.GetRUPerDBOPerationMappings());
+                System.IO.File.AppendAllLines($"{resultPath}\\GetSRUEvents.txt", test.GetRUPerDBOPerationEvents());
             }
 
         }
@@ -168,12 +259,16 @@ namespace EventConvergencePOCTest.Tests
 
             System.IO.File.WriteAllLines($"{resultPath}\\CancelTimes.txt", overall);
             System.IO.File.WriteAllLines($"{resultPath}\\CancelRU.txt", ru);
+            System.IO.File.WriteAllLines($"{resultPath}\\CancelRUMappings.txt", test.GetRUPerDBOPerationMappings());
+            System.IO.File.WriteAllLines($"{resultPath}\\CancelRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
             Random rnd = new Random(1000);
             int jobIndex = 0;
             for (int i = 0, j = 0; i < MAX_ITERATIONS; i++)
             {
                 overall.Clear();
                 ru.Clear();
+                test.ClearRU();
                 for (j = 0; j < MAX_EVENTS; j++)
                 {
                     try
@@ -194,6 +289,9 @@ namespace EventConvergencePOCTest.Tests
 
                 System.IO.File.AppendAllLines($"{resultPath}\\CancelTimes.txt", overall);
                 System.IO.File.AppendAllLines($"{resultPath}\\CancelRU.txt", ru);
+                System.IO.File.AppendAllLines($"{resultPath}\\CancelRUMappings.txt", test.GetRUPerDBOPerationMappings());
+                System.IO.File.AppendAllLines($"{resultPath}\\CancelRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
 
             }
         }
@@ -207,12 +305,16 @@ namespace EventConvergencePOCTest.Tests
             System.IO.Directory.CreateDirectory($"{resultPath}");
             System.IO.File.WriteAllLines($"{resultPath}\\SatisfyTimes.txt", overall);
             System.IO.File.WriteAllLines($"{resultPath}\\SatisfyRU.txt", ru);
+            System.IO.File.WriteAllLines($"{resultPath}\\SatisfyRUMappings.txt", test.GetRUPerDBOPerationMappings());
+            System.IO.File.WriteAllLines($"{resultPath}\\SatisfyRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
             Random rnd = new Random(1000);
             int jobIndex = 0;
             for (int i = 0, j = 0; i < MAX_ITERATIONS; i++)
             {
                 overall.Clear();
                 ru.Clear();
+                test.ClearRU();
                 for (j = 0; j < MAX_EVENTS; j++)
                 {
                     try 
@@ -235,6 +337,9 @@ namespace EventConvergencePOCTest.Tests
 
                 System.IO.File.AppendAllLines($"{resultPath}\\SatisfyTimes.txt", overall);
                 System.IO.File.AppendAllLines($"{resultPath}\\SatisfyRU.txt", ru);
+                System.IO.File.AppendAllLines($"{resultPath}\\SatisfyRUMappings.txt", test.GetRUPerDBOPerationMappings());
+                System.IO.File.AppendAllLines($"{resultPath}\\SatisfyRUEvents.txt", test.GetRUPerDBOPerationEvents());
+
 
             }
         }

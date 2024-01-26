@@ -6,17 +6,25 @@ using System.Threading.Tasks;
 
 namespace EventConvergencePOCTest.Contracts
 {
+    internal class CosmosDbItem<T>
+    {
+
+        public string etag { get; set; }
+
+        public T payload { get; set; }
+    }
+
     internal class Events
     {
         // For cosmos Operations
         public string pk { get; set; }
         public string id { get; set; }
-        
+
         // Payload
         public string EventName { get; set; }
         public string Scope { get; set; }
         public string Status { get; set; }
-        public DateTime ExpirationTime { get; set; }
+        public double ExpirationDuration { get; set; }
         public DateTime FirstSatisfactionTimestamp { get; set; }
         public Dictionary<string, string> Arguments { get; set; }
         public string AssociatedJobId { get; set; }

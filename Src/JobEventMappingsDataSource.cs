@@ -1,13 +1,19 @@
-﻿using EventConvergencePOCTest.Contracts;
+﻿using Azure;
+using EventConvergencePOCTest.Contracts;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Serialization.HybridRow;
+using Microsoft.Azure.Cosmos.Serialization.HybridRow.Schemas;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using PartitionKey = Microsoft.Azure.Cosmos.PartitionKey;
 
 namespace EventConvergencePOCTest.Src
 {
@@ -17,7 +23,7 @@ namespace EventConvergencePOCTest.Src
         Dictionary<string, Container> JobEventContainers;
         List<string> JobEventsContainerId = new List<string> { "JobEventsMapping" };
         Database EventDatabase;
-        string databaseId = "Events";
+        string databaseId = "EventsTest1";
         List<string> EventsContainerId = new List<string> { "Events" };
 
         public static string BindingStateActive = "Active";
@@ -29,8 +35,19 @@ namespace EventConvergencePOCTest.Src
 
         double requestCharge = 0;
         double requestExecutionTime = 0;
+        List<string> requestChargePerDbOperation = new List<string>();
 
-        public JobEventMappingsDataSource (CosmosClient cosmosClient)
+        public void ClearCharge()
+        {
+            requestChargePerDbOperation?.Clear();
+        }
+
+        public List<string> GetRUPerDBoperation()
+        {
+            return requestChargePerDbOperation;
+        }
+
+        public JobEventMappingsDataSource(CosmosClient cosmosClient)
         {
             this.cosmosClient = cosmosClient;
         }
@@ -49,16 +66,16 @@ namespace EventConvergencePOCTest.Src
             FeedResponse<ContainerProperties> containers = iterator.ReadNextAsync().ConfigureAwait(false).GetAwaiter().GetResult();
 
 
-            for(int i=0; i< containers.Count; i++)
+            for (int i = 0; i < containers.Count; i++)
             {
                 var containerId = containers.ElementAt(i).Id;
 
-                if ( EventsContainerId.Contains(containerId, StringComparer.OrdinalIgnoreCase))
+                if (EventsContainerId.Contains(containerId, StringComparer.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                if(this.JobEventsContainerId.Contains(containerId, StringComparer.OrdinalIgnoreCase))
+                if (this.JobEventsContainerId.Contains(containerId, StringComparer.OrdinalIgnoreCase))
                 {
                     this.JobEventContainers.Add(containerId, EventDatabase.GetContainer(containerId));
                 }
@@ -75,16 +92,36 @@ namespace EventConvergencePOCTest.Src
                 {
                     continue;
                 }
-
-                List<string> subPartitionKeyPaths = new List<string> {
-                                                    "/pk1",
-                                                    "/pk2" };
-                var containerProperties = new ContainerProperties(containerId, partitionKeyPaths: subPartitionKeyPaths);
                 var throughputProperties = ThroughputProperties.CreateAutoscaleThroughput(1000);
-                JobEventContainers[containerId] = EventDatabase.CreateContainerIfNotExistsAsync(
-                    containerProperties,
-                    throughputProperties).GetAwaiter().GetResult()?.Container;
 
+                string partitionKey = "/pk1";
+                var container = EventDatabase.DefineContainer(containerId, partitionKey)
+                    .WithIndexingPolicy()
+                    .WithAutomaticIndexing(false)
+                    .WithIncludedPaths()
+                    .Path("/")
+                    .Path("/PublishingEvent/?")
+                    .Path("/Scope/?")
+                    .Path("/JobId/?")
+                    .Path("/TaskId/?")
+                    .Path("/Status/?")
+                    .Path("/pk1/?")
+                    .Path("/EventTimestamp/?")
+                    .Attach()
+                    .WithExcludedPaths()
+                    .Path("/AdditionalScopes/*")
+                    .Path("/JobType/?")
+                    .Path("/Workflow/?")
+                    .Path("/AssociatedPrerequisites/*")
+                    .Path("/Arguments/*")
+                    .Path("/BindingState/?")
+                    .Path("/TimeToSatisfy/?")
+                    .Path("/_ts/?")
+                    .Path("/_etag/?")
+                    .Attach()
+                    .Attach()
+                    .CreateIfNotExistsAsync(throughputProperties).GetAwaiter().GetResult().Container;
+                JobEventContainers[containerId] = container;
             }
         }
 
@@ -92,13 +129,18 @@ namespace EventConvergencePOCTest.Src
         {
             try
             {
+                /*
                 newState.pk1 = $"{newState.PublishingEvent}".ToLower();
                 newState.pk2 = $"{newState.Scope}".ToLower();
+                */
+                newState.pk1 = $"{newState.PublishingEvent}-{newState.Scope}".ToLower();
                 newState.id = $"{newState.JobId}-{newState.TaskId}".ToLower();
-                var response = JobEventContainers[JobEventsContainerId[0]].UpsertItemAsync<JobEventMappings>(newState).GetAwaiter().GetResult();
+                var response = JobEventContainers[JobEventsContainerId[0]].UpsertItemAsync<JobEventMappings>(newState, new PartitionKey(newState.pk1)).GetAwaiter().GetResult();
+                requestChargePerDbOperation.Add($"Write {response.RequestCharge}");
+
                 return new Tuple<double, double>(response.RequestCharge, response.Diagnostics.GetClientElapsedTime().TotalMilliseconds);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 // Console.WriteLine(ex.Message);
                 throw ex;
@@ -120,6 +162,8 @@ namespace EventConvergencePOCTest.Src
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
                     var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
                     this.requestCharge += results.RequestCharge;
+                    requestChargePerDbOperation.Add($"Read {results.RequestCharge}");
+
                     this.requestExecutionTime += results.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     if (results != null)
                     {
@@ -150,11 +194,13 @@ namespace EventConvergencePOCTest.Src
 
                 try
                 {
-                    var query = $"SELECT * FROM c WHERE c.PublishingEvent = '{name}' AND c.Scope = '{scope}' AND c.Status = 'Satisfied' AND c.BindingState = 'Active'";
+                    var query = $"SELECT * FROM c WHERE c.PublishingEvent = '{name}' AND c.Scope = '{scope}' AND c.Status = '{Satisfied}' AND c.BindingState = '{BindingStateActive}'";
                     var queryDefinition = new QueryDefinition(query);
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
                     var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
                     this.requestCharge += results.RequestCharge;
+                    requestChargePerDbOperation.Add($"Read {results.RequestCharge}");
+
                     this.requestExecutionTime += results.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     if (results != null)
                     {
@@ -179,18 +225,20 @@ namespace EventConvergencePOCTest.Src
         {
             var JobEventMappingsContainer = JobEventContainers[JobEventsContainerId[0]];
             List<JobEventMappings> resultsList = new List<JobEventMappings>();
-            
+
             ResetTimmings();
             foreach (var name in EventNames)
             {
 
                 try
                 {
-                    var query = $"SELECT * FROM c WHERE c.pk1 = '{name.ToLower()}' AND c.pk2 = '{scope.ToLower()}' AND c.Status = 'Registered' AND c.BindingState = 'Active'";
+                    var query = $"SELECT * FROM c WHERE c.pk1 = '{name.ToLower()}-{scope.ToLower()}' AND c.Status = '{Registered}' AND c.BindingState = '{BindingStateActive}'";
                     var queryDefinition = new QueryDefinition(query);
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
                     var results = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
                     this.requestCharge += results.RequestCharge;
+                    requestChargePerDbOperation.Add($"Read {results.RequestCharge}");
+
                     this.requestExecutionTime += results.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     if (results != null)
                     {
@@ -220,10 +268,12 @@ namespace EventConvergencePOCTest.Src
             {
                 if (altNames.Count > 0)
                 {
-                    var query = $"SELECT * FROM c WHERE c.JobId = '{jobId}' AND c.TaskId = '{taskId}' AND c.pk2='{scope.ToLower()}'";
+                    var query = $"SELECT * FROM c WHERE c.JobId = '{jobId}' AND c.TaskId = '{taskId}' AND c.Scope='{scope}'";
                     var queryDefinition = new QueryDefinition(query);
                     var queryIterator = JobEventMappingsContainer.GetItemQueryIterator<JobEventMappings>(queryDefinition);
                     var response = queryIterator.ReadNextAsync().GetAwaiter().GetResult();
+                    requestChargePerDbOperation.Add($"Read {response.RequestCharge}");
+
                     this.requestCharge += response.RequestCharge;
                     this.requestExecutionTime += response.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
 
@@ -242,9 +292,12 @@ namespace EventConvergencePOCTest.Src
                 else
                 {
                     var id = $"{jobId}-{taskId}";
-                    var partitionKey = new PartitionKeyBuilder().Add(altNames[0].ToLower()).Add(scope.ToLower()).Build();
+                    // var partitionKey = new PartitionKeyBuilder().Add(altNames[0].ToLower()).Add(scope.ToLower()).Build();
+                    var partitionKey = new PartitionKey($"{altNames[0].ToLower()}-.{scope.ToLower()}");
                     var response = JobEventMappingsContainer.ReadItemAsync<JobEventMappings>(id, partitionKey).GetAwaiter().GetResult();
                     this.requestCharge += response.RequestCharge;
+                    requestChargePerDbOperation.Add($"Read {response.RequestCharge}");
+
                     this.requestExecutionTime += response.Diagnostics.GetClientElapsedTime().TotalMilliseconds;
                     return response.Resource;
                 }

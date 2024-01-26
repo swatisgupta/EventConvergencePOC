@@ -9,7 +9,9 @@ using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Permissions;
 using System.Threading.Tasks;
+using System.Web;
 using Container = Microsoft.Azure.Cosmos.Container;
 
 namespace EventConvergencePOCTest.Src
@@ -155,59 +157,52 @@ namespace EventConvergencePOCTest.Src
             timer.EndTimer(JobEventMappingsTimer);
 
             timer.StartTimer();
+
+            /*
             var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
             var oldEntry = GetEventOldTable(EventName, scope);
 
-            var existingState = CalculateState(oldEntry, newEntry);
-            bool isStatusChanged = false;
+            var existingState = CalculateState(oldEntry, newEntry?.payload);
             var targetName = EventName.Equals(EntityName) ? EntityName : existingState != null ? existingState.EventName : EventName;
 
-            isStatusChanged = this.eventsDataSource.RegisterEvent(existingState, out Events newState, targetName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, AssociatedPrerequisites, jobType, workflow);
+            bool isStatusChanged = this.eventsDataSource.RegisterEvent(existingState, out Events newState, targetName, scope, true, jobId, taskId, EventArguments, AdditionalScopes, AssociatedPrerequisites, jobType, workflow);
+            var cosmosItem = new CosmosDbItem<Events>();
 
             if (isStatusChanged)
             {
+                cosmosItem.etag = newEntry.etag;
                 if (existingState != null && existingState.EventName != targetName)
                 {
+                    cosmosItem.payload = existingState;
                     existingState.Status = EventsDataSource.Obsolete;
-                    // TaskList[1] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(existingState));
-                   var res =  this.eventsDataSource.UpdateEvent(existingState);
+                    var res = this.eventsDataSource.UpdateEvent(cosmosItem);
 
                     this.EventsRU += res.Item1;
-                    // timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2);
                 }
-                var res2 = this.eventsDataSource.UpdateEvent(newState);
+                cosmosItem.payload = newState;
+                var res2 = this.eventsDataSource.UpdateEvent(cosmosItem);
                 this.EventsRU += res2.Item1;
 
             }
-            /*
-            TaskList[1].Start();
-            TaskList[2].Start();
             */
 
+            var isStatusChanged = this.eventsDataSource.ComputeEventState(EventName, altNames, scope, out CosmosDbItem<Events> cosmosItem);
+            if (isStatusChanged)
+            {
+                var res2 = this.eventsDataSource.UpdateEvent(cosmosItem);
+                this.EventsRU += res2.Item1;
+
+            }
+
             timer.EndTimer((int)EventsTimer);
+            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
             this.EventsRU += this.eventsDataSource.GetRequestCharge();
-           /*
-            Task.WaitAll(TaskList);
 
-            this.JobEventMappingsRU += TaskList[0].Result.Item1;
-            timer.UpdateTimer(JobEventMappingsTimer, TaskList[0].Result.Item2);
-
-            this.EventsRU += TaskList[1].Result.Item1 + TaskList[2].Result.Item1;
-            timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2);
-           */
         }
 
         public void Satisfy(string EventName, string scope, string jobId = null, string taskId = null, Dictionary<string, string> EventArguments = null, List<Dictionary<string, string>> AdditionalScopes = null, List<Dictionary<string,string>> AssociatedPrerequisites = null, string jobType = null, string workflow = null)
         {
             ResetStatistics();
-
-            /*
-            Task<Tuple<double, double>>[] TaskList =    {
-                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); } ),
-                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); }),
-                                                            new Task<Tuple<double, double>>(() => { return new Tuple<double, double>( 0, 0 ); }),
-                                                         };
-            */
 
             timer.StartTimer();
             var altNames = catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
@@ -242,12 +237,9 @@ namespace EventConvergencePOCTest.Src
                 jobRecord.Arguments = EventArguments ?? jobRecord.Arguments;
                 jobRecord.AdditionalScopes = AdditionalScopes ?? jobRecord.AdditionalScopes;
                 jobRecord.AssociatedPrerequisites = AssociatedPrerequisites ?? jobRecord.AssociatedPrerequisites;
-                // TaskList[0] = new Task<Tuple<double, double>>(() => this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord));
                 var res = this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
                 JobEventMappingsRU += res.Item1;
             }
-            // TaskList[0].Start();
-            // TaskList[0].Wait();
             timer.EndTimer(JobEventMappingsTimer);
 
             timer.StartTimer();
@@ -255,38 +247,31 @@ namespace EventConvergencePOCTest.Src
             var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
             var oldEntry = GetEventOldTable(EventName, scope);
 
-            var existingState = CalculateState(oldEntry, newEntry);
+            var existingState = CalculateState(oldEntry, newEntry?.payload);
             var targetName = EventName.Equals(EntityName) ? EntityName : existingState != null ? existingState.EventName : EventName;
 
             var isStatusChanged = this.eventsDataSource.SatisfyEvent(existingState, out Events newState, targetName, scope, jobId, taskId, EventArguments, AdditionalScopes, AssociatedPrerequisites, jobType, workflow);
 
+            var cosmosItem = new CosmosDbItem<Events>();
+
             if (isStatusChanged)
             {
+                cosmosItem.etag = newEntry.etag;
                 if (existingState != null && existingState.EventName != targetName)
                 {
+                    cosmosItem.payload = existingState;
                     existingState.Status = EventsDataSource.Obsolete;
-                    //TaskList[1] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(existingState));
-                    var res1 = this.eventsDataSource.UpdateEvent(existingState);
-                    this.EventsRU += res1.Item1;
+                    var res = this.eventsDataSource.UpdateEvent(cosmosItem);
 
+                    this.EventsRU += res.Item1;
                 }
-                // TaskList[2] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(newState));
-                var res2 = this.eventsDataSource.UpdateEvent(newState);
+                cosmosItem.payload = newState;
+                var res2 = this.eventsDataSource.UpdateEvent(cosmosItem);
                 this.EventsRU += res2.Item1;
 
             }
-            // TaskList[1].Start();
-            // TaskList[2].Start();
             timer.EndTimer(EventsTimer);
             this.EventsRU += this.eventsDataSource.GetRequestCharge();
-            /*
-            Task.WaitAll(TaskList);
-
-            this.JobEventMappingsRU += TaskList[0].Result.Item1;
-            timer.UpdateTimer(JobEventMappingsTimer, TaskList[0].Result.Item2);
-
-            this.EventsRU += TaskList[1].Result.Item1 + TaskList[2].Result.Item1;
-            timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2); */
 
         }
 
@@ -294,21 +279,13 @@ namespace EventConvergencePOCTest.Src
         {
             ResetStatistics();
 
-            /*
-            Task<Tuple<double, double>>[] TaskList =    {
-                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); } ),
-                                                            new Task<Tuple<double, double>>( () => { return new Tuple<double, double>( 0, 0 ); }),
-                                                            new Task<Tuple<double, double>>(() => { return new Tuple<double, double>( 0, 0 ); }),
-                                                         };
-            */
-
             timer.StartTimer();
             var altNames = this.catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
             timer.EndTimer(CatalogTimer);
             this.CatalogRU += this.catalogDataSource.GetCatalogRU();
 
             timer.StartTimer();
-            
+
             if (jobId != null && taskId != null)
             {
                 // read Job-Event container if record found, update state to registered
@@ -330,28 +307,25 @@ namespace EventConvergencePOCTest.Src
                 jobRecord.Status = JobEventMappingsDataSource.Canceled;
                 jobRecord.EventTimestamp = DateTime.UtcNow;
 
-                // TaskList[0] = new Task<Tuple<double, double>>(() => this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord));
                 var res = this.jobEventMappingsDataSource.UpdateJobEventMappings(jobRecord);
                 this.JobEventMappingsRU += res.Item1;
                 if (previousStatus == null || !previousStatus.Equals(JobEventMappingsDataSource.Satisfied))
                 {
-                    // TaskList[0].Start();
-                    // Task.WaitAll(TaskList[0]);
                     timer.EndTimer(JobEventMappingsTimer);
                     return;
                 }
             }
-            // TaskList[0].Start();
-            // TaskList[0].Wait();
 
             timer.EndTimer(JobEventMappingsTimer);
 
 
             timer.StartTimer();
-            var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
-            var oldEntry = GetEventOldTable(EventName, scope);
 
-            var existingState = CalculateState(oldEntry, newEntry);
+            /*
+             var newEntry = this.eventsDataSource.GetEvent(altNames, scope);
+               var oldEntry = GetEventOldTable(EventName, scope);
+
+               var existingState = CalculateState(oldEntry, newEntry?.payload);
             var targetName = EventName.Equals(EntityName) ? EntityName : existingState != null ? existingState.EventName : EventName;
 
             var isStatusChanged = this.eventsDataSource.CancelEvent(existingState, out Events newState, targetName, altNames, scope, false, jobId, taskId);
@@ -359,32 +333,70 @@ namespace EventConvergencePOCTest.Src
 
             if (isStatusChanged)
             {
+
+                cosmosItem.etag = newEntry.etag;
                 if (existingState != null && existingState.EventName != targetName)
                 {
+                    cosmosItem.payload = existingState;
                     existingState.Status = EventsDataSource.Obsolete;
-                    // TaskList[1] = new Task<Tuple<double, double>>(() => this.eventsDataSource.UpdateEvent(existingState));
-                   var res = this.eventsDataSource.UpdateEvent(existingState);
-                   this.EventsRU += res.Item1;
+                    var res = this.eventsDataSource.UpdateEvent(cosmosItem);
 
+                    this.EventsRU += res.Item1;
                 }
-                var res1 = this.eventsDataSource.UpdateEvent(newState);
-                this.EventsRU += res1.Item1;
+                cosmosItem.payload = newState;
+                var res2 = this.eventsDataSource.UpdateEvent(cosmosItem);
+                this.EventsRU += res2.Item1;
 
             }
+            */
+            var isStatusChanged = this.eventsDataSource.ComputeEventState(EventName, altNames, scope, out CosmosDbItem<Events> cosmosItem);
+            if(isStatusChanged)
+            {
+                var res2 = this.eventsDataSource.UpdateEvent(cosmosItem);
+                this.EventsRU += res2.Item1;
+
+            }
+        
             timer.EndTimer((int)EventsTimer);
             this.EventsRU += this.eventsDataSource.GetRequestCharge();
             this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
-            /*
-            Task.WaitAll(TaskList);
-
-            this.JobEventMappingsRU += TaskList[0].Result.Item1;
-            timer.UpdateTimer(JobEventMappingsTimer, TaskList[0].Result.Item2);
-
-            this.EventsRU += TaskList[1].Result.Item1 + TaskList[2].Result.Item1;
-            timer.UpdateTimer(EventsTimer, TaskList[1].Result.Item2 + TaskList[2].Result.Item2);
-            */
         }
 
+        public string GetStatus(string EventName, string scope)
+        {
+            ResetStatistics();
+
+            timer.StartTimer();
+            var altNames = this.catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
+            timer.EndTimer(CatalogTimer);
+            this.CatalogRU += this.catalogDataSource.GetCatalogRU();
+
+            timer.StartTimer();
+            this.eventsDataSource.ComputeState(EventName, altNames, scope, out CosmosDbItem<Events> cosmosItem, DateTime.MinValue, false);
+            timer.EndTimer(EventsTimer);
+            this.EventsRU += this.eventsDataSource.GetRequestCharge();
+            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
+
+            return cosmosItem.payload.Status;
+        }
+
+        public string GetStatusSimple(string EventName, string scope)
+        {
+            ResetStatistics();
+
+            timer.StartTimer();
+            var altNames = this.catalogDataSource.GetCatalogEntity(EventName, out string EntityName);
+            timer.EndTimer(CatalogTimer);
+            this.CatalogRU += this.catalogDataSource.GetCatalogRU();
+
+            timer.StartTimer();
+            var ev = this.eventsDataSource.GetEvent(altNames, scope);
+            timer.EndTimer(EventsTimer);
+            this.EventsRU += this.eventsDataSource.GetRequestCharge();
+            this.JobEventMappingsRU += this.jobEventMappingsDataSource.GetRequestCharge();
+
+            return ev.payload?.Status;
+        }
 
         public string GetExecutionTimes()
         {
@@ -394,6 +406,22 @@ namespace EventConvergencePOCTest.Src
         public string GetRUConsumption()
         {
             return $"{CatalogRU} {JobEventMappingsRU} {EventsRU}";
+        }
+
+        public void ClearRU()
+        {
+            jobEventMappingsDataSource.ClearCharge();
+            eventsDataSource.ClearCharge();
+        }
+        public List<string> GetRUPerDBOPerationMappings()
+        {
+            return jobEventMappingsDataSource.GetRUPerDBoperation();
+        }
+
+
+        public List<string> GetRUPerDBOPerationEvents()
+        {
+            return this.eventsDataSource.GetRUPerDBoperation();
         }
     }
 }
