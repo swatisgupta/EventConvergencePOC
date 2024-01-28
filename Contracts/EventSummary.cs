@@ -14,7 +14,7 @@ namespace EventConvergencePOCTest.Contracts
         public T payload { get; set; }
     }
 
-    internal class Events
+    public class EventSummary
     {
         // For cosmos Operations
         public string pk { get; set; }
@@ -31,11 +31,9 @@ namespace EventConvergencePOCTest.Contracts
         public string AssociatedTaskId { get; set; }
         public string AssociatedJobType { get; set; }
         public string AssociatedWorkflow { get; set; }
-        public List<Dictionary<string, string>> AdditionalScopes { get; set; }
+        public List<string> AdditionalScopes { get; set; }
         public List<Dictionary<string, string>> AssociatedPrerequisites { get; set; }
         public int TimeToSatisfy { get; set; }
-
-        public int SatisfyBy { get; set; }
 
         public DateTime EventTimestamp { get; set; }
     }

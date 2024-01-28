@@ -41,12 +41,12 @@
   <ItemGroup>
     <Compile Include="Contracts\DependencyEntity.cs" />
     <Compile Include="Contracts\EntityPrerequisite.cs" />
-    <Compile Include="Contracts\Events.cs" />
-    <Compile Include="Contracts\JobEventMappings.cs" />
+    <Compile Include="Contracts\EventSummary.cs" />
+    <Compile Include="Contracts\Event.cs" />
     <Compile Include="Src\CatalogDataSource.cs" />
-    <Compile Include="Src\EventsDataSource.cs" />
+    <Compile Include="Src\EventSummaryDataSource.cs" />
     <Compile Include="Src\EventsService.cs" />
-    <Compile Include="Src\JobEventMappingsDataSource.cs" />
+    <Compile Include="Src\EventDataSource.cs" />
     <Compile Include="Src\Timer.cs" />
     <Compile Include="Tests\LoadTestEventConvergence.cs" />
   </ItemGroup>
